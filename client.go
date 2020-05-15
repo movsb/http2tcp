@@ -3,10 +3,13 @@ package main
 import (
 	"bufio"
 	"crypto/tls"
+	"fmt"
 	"io"
 	"log"
 	"net"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 )
 
@@ -29,17 +32,39 @@ func client() {
 				log.Println(`accept:`, conn.RemoteAddr().String())
 				go func() {
 					defer conn.Close()
-					server, err := tls.Dial(`tcp`, `blog.twofei.com:443`, nil)
+					httpAddress := config.Server
+					if !strings.Contains(httpAddress, `://`) {
+						httpAddress = `http://` + httpAddress
+					}
+					u, err := url.Parse(httpAddress)
 					if err != nil {
 						panic(err)
 					}
+					host := u.Hostname()
+					port := u.Port()
+					if port == `` {
+						switch u.Scheme {
+						case `http`:
+							port = "80"
+						case `https`:
+							port = `443`
+						default:
+							panic(`unknown scheme`)
+						}
+					}
+					server, err := tls.Dial(`tcp`, fmt.Sprintf(`%s:%s`, host, port), nil)
+					if err != nil {
+						log.Println(err)
+						return
+					}
 					defer server.Close()
-					req, err := http.NewRequest(http.MethodGet, `https://blog.twofei.com/`+config.Prefix+`/`+path.Name, nil)
+					u.Path = fmt.Sprintf(`/%s/%s`, config.Prefix, path.Name)
+					req, err := http.NewRequest(http.MethodGet, u.String(), nil)
 					if err != nil {
 						panic(err)
 					}
 					req.Header.Add(`Connection`, `upgrade`)
-					req.Header.Add(`Upgrade`, `nginx2tcp`)
+					req.Header.Add(`Upgrade`, `http2tcp`)
 					req.Header.Add(`Authorization`, path.Token)
 					if err := req.Write(server); err != nil {
 						panic(err)

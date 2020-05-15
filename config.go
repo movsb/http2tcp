@@ -10,6 +10,8 @@ type Path struct {
 
 // Config ...
 type Config struct {
+	Listen string `yaml:"listen"`
+	Server string `yaml:"server"`
 	Prefix string `yaml:"prefix"`
 	Token  string `yaml:"token"`
 	Paths  []Path `yaml:"paths"`

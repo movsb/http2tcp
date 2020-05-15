@@ -15,7 +15,7 @@ func server() {
 			log.Println(req.RequestURI)
 			authorization := req.Header.Get(`Authorization`)
 			upgrade := req.Header.Get(`Upgrade`)
-			if authorization != path.Token || upgrade != `nginx2tcp` {
+			if authorization != path.Token || upgrade != `http2tcp` {
 				log.Println(`unauth`)
 				return
 			}
@@ -65,5 +65,5 @@ func server() {
 		)
 		log.Println(`handle:`, u)
 	}
-	http.ListenAndServe(`localhost:1025`, mux)
+	http.ListenAndServe(config.Listen, mux)
 }
