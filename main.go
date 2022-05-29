@@ -1,26 +1,51 @@
 package main
 
 import (
+	"fmt"
+	"log"
+	"net/http"
 	"os"
+	"path/filepath"
 
-	"gopkg.in/yaml.v3"
+	flag "github.com/spf13/pflag"
 )
 
-var config = Config{}
-
 func main() {
-	fp, err := os.Open(`http2tcp.yml`)
-	if err != nil {
-		panic(err)
+	runAsServer := flag.BoolP(`server`, `s`, false, `Run as server.`)
+	runAsClient := flag.BoolP(`client`, `c`, false, `Run as client.`)
+
+	listenAddr := flag.StringP(`listen`, `l`, ``, `Listen address (client & server)`)
+	serverEndpoint := flag.StringP(`endpoint`, `e`, ``, `Server endpoint.`)
+	destination := flag.StringP(`destination`, `d`, ``, `The destination address to connect to`)
+
+	token := flag.StringP(`token`, `T`, ``, `The token used between client and server`)
+
+	help := flag.BoolP(`help`, `h`, false, `Show this help`)
+
+	flag.Parse()
+
+	if !*help && !*runAsServer && !*runAsClient {
+		log.Fatalln(`either -s or -c must be specified`)
 	}
-	defer fp.Close()
-	if err := yaml.NewDecoder(fp).Decode(&config); err != nil {
-		panic(err)
+	if *help {
+		fmt.Fprintf(os.Stderr, "Usage of %s:\n", filepath.Base(os.Args[0]))
+		flag.PrintDefaults()
+		os.Exit(1)
 	}
-	switch os.Args[1] {
-	case `s`:
-		server()
-	case `c`:
-		client()
+	if *runAsServer {
+		s := NewServer(*token)
+		if err := http.ListenAndServe(*listenAddr, s); err != nil {
+			log.Fatalln(err)
+		}
+		return
+	}
+	if *runAsClient {
+		c := NewClient(*serverEndpoint, *token)
+		if *listenAddr != `` {
+			c.Serve(*listenAddr, *destination)
+		} else {
+			c.Std(*destination)
+		}
+		return
 	}
 }
