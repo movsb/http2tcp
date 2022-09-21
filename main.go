@@ -11,6 +11,8 @@ import (
 )
 
 func main() {
+	log.SetFlags(log.LstdFlags | log.Lshortfile)
+
 	runAsServer := flag.BoolP(`server`, `s`, false, `Run as server. [S]`)
 	runAsClient := flag.BoolP(`client`, `c`, false, `Run as client. [C]`)
 
@@ -34,6 +36,7 @@ func main() {
 
 	if !*runAsServer && !*runAsClient || *help {
 		flag.Usage()
+		return
 	}
 	if *runAsServer {
 		s := NewServer(*token)

@@ -1,8 +1,8 @@
 # http2tcp
 
-**http2tcp** is a simple client & server program that turns a HTTP connection to a TCP connection.
+**http2tcp** is a simple client & server program that turns an HTTP connection to a TCP connection.
 
-This is kind of useful if you want hide all ports traffic other than the standard well-known ports 80 and 443.
+This is kind of useful if you want to hide all ports traffic other than the standard well-known ports 80 and 443.
 
 ## Usage
 
@@ -63,6 +63,7 @@ server {
 		proxy_set_header Host $host;
 		proxy_set_header Upgrade $http_upgrade;
 		proxy_set_header Connection "Upgrade";
+		proxy_read_timeout 600s;
 		proxy_pass http://localhost:2222/;
 	}
 }

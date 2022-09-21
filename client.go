@@ -2,10 +2,10 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/tls"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"net"
 	"net/http"
@@ -121,8 +121,9 @@ func (c *Client) proxy(clientConn io.ReadWriter, addr string) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusSwitchingProtocols {
-		b, _ := ioutil.ReadAll(resp.Body)
-		return fmt.Errorf("statusCode != 101: %s: %s", resp.Status, string(b))
+		buf := bytes.NewBuffer(nil)
+		resp.Write(buf)
+		return fmt.Errorf("statusCode != 101:\n%s", buf.String())
 	}
 
 	wg := &sync.WaitGroup{}
