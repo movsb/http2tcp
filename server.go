@@ -5,8 +5,10 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 const (
@@ -16,6 +18,7 @@ const (
 
 type Server struct {
 	token string
+	conn  int32 // number of active connections
 }
 
 func NewServer(token string) *Server {
@@ -50,16 +53,31 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	defer remote.Close()
+	onceCloseRemote := &OnceCloser{Closer: remote}
+	defer func() {
+		if err := onceCloseRemote.Close(); err != nil {
+			log.Println("error closing remote:", err)
+			return
+		}
+	}()
 
 	w.Header().Add(`Content-Length`, `0`)
 	w.WriteHeader(http.StatusSwitchingProtocols)
-	conn, bio, err := w.(http.Hijacker).Hijack()
+	local, bio, err := w.(http.Hijacker).Hijack()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	defer conn.Close()
+	onceCloseLocal := &OnceCloser{Closer: local}
+	defer func() {
+		if err := onceCloseLocal.Close(); err != nil {
+			log.Println("error closing local:", err)
+			return
+		}
+	}()
+
+	log.Println("enter: number of connections:", atomic.AddInt32(&s.conn, +1))
+	defer func() { log.Println("leave: number of connections:", atomic.AddInt32(&s.conn, -1)) }()
 
 	wg := &sync.WaitGroup{}
 	wg.Add(2)
@@ -76,7 +94,23 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		io.Copy(remote, conn)
+
+		if _, err := io.Copy(remote, local); err != nil {
+			// Abnormal close.
+			err2 := onceCloseRemote.Close()
+			log.Println("close remote because local is abnormally closed", err, err2)
+			return
+		}
+
+		// EOF or the client actively closed the connection.
+		if cw, ok := remote.(WriteCloser); ok {
+			err := cw.CloseWrite()
+			log.Println("close write of remote because local read is normally closed", err)
+			return
+		}
+
+		err = onceCloseRemote.Close()
+		log.Println("close remote because local is normally closed but remote is not a WriteCloser", reflect.TypeOf(remote).String(), err)
 	}()
 
 	go func() {
@@ -88,7 +122,22 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		io.Copy(conn, remote)
+		if _, err := io.Copy(local, remote); err != nil {
+			// Abnormal close.
+			err2 := onceCloseLocal.Close()
+			log.Println("close local because remote is abnormally closed", err, err2)
+			return
+		}
+
+		// EOF or the remote actively closed the connection.
+		if cw, ok := local.(WriteCloser); ok {
+			err := cw.CloseWrite()
+			log.Println("close write of local because remote read is normally closed", err)
+			return
+		}
+
+		err = onceCloseLocal.Close()
+		log.Println("close local because remote is normally closed but local is not a WriteCloser", reflect.TypeOf(local).String(), err)
 	}()
 
 	wg.Wait()
