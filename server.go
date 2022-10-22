@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 const (
@@ -16,6 +17,7 @@ const (
 
 type Server struct {
 	token string
+	conn  int32 // number of active connections
 }
 
 func NewServer(token string) *Server {
@@ -50,16 +52,21 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	defer remote.Close()
+	onceCloseRemote := &OnceCloser{Closer: remote}
+	defer onceCloseRemote.Close()
 
 	w.Header().Add(`Content-Length`, `0`)
 	w.WriteHeader(http.StatusSwitchingProtocols)
-	conn, bio, err := w.(http.Hijacker).Hijack()
+	local, bio, err := w.(http.Hijacker).Hijack()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	defer conn.Close()
+	onceCloseLocal := &OnceCloser{Closer: local}
+	defer onceCloseLocal.Close()
+
+	log.Println("enter: number of connections:", atomic.AddInt32(&s.conn, +1))
+	defer func() { log.Println("leave: number of connections:", atomic.AddInt32(&s.conn, -1)) }()
 
 	wg := &sync.WaitGroup{}
 	wg.Add(2)
@@ -76,7 +83,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		io.Copy(remote, conn)
+
+		defer onceCloseRemote.Close()
+		_, _ = io.Copy(remote, local)
 	}()
 
 	go func() {
@@ -88,7 +97,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		io.Copy(conn, remote)
+		defer onceCloseLocal.Close()
+		_, _ = io.Copy(local, remote)
 	}()
 
 	wg.Wait()
