@@ -5,7 +5,6 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -54,12 +53,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	onceCloseRemote := &OnceCloser{Closer: remote}
-	defer func() {
-		if err := onceCloseRemote.Close(); err != nil {
-			log.Println("error closing remote:", err)
-			return
-		}
-	}()
+	defer onceCloseRemote.Close()
 
 	w.Header().Add(`Content-Length`, `0`)
 	w.WriteHeader(http.StatusSwitchingProtocols)
@@ -69,12 +63,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	onceCloseLocal := &OnceCloser{Closer: local}
-	defer func() {
-		if err := onceCloseLocal.Close(); err != nil {
-			log.Println("error closing local:", err)
-			return
-		}
-	}()
+	defer onceCloseLocal.Close()
 
 	log.Println("enter: number of connections:", atomic.AddInt32(&s.conn, +1))
 	defer func() { log.Println("leave: number of connections:", atomic.AddInt32(&s.conn, -1)) }()
@@ -95,22 +84,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		if _, err := io.Copy(remote, local); err != nil {
-			// Abnormal close.
-			err2 := onceCloseRemote.Close()
-			log.Println("close remote because local is abnormally closed", err, err2)
-			return
-		}
-
-		// EOF or the client actively closed the connection.
-		if cw, ok := remote.(WriteCloser); ok {
-			err := cw.CloseWrite()
-			log.Println("close write of remote because local read is normally closed", err)
-			return
-		}
-
-		err = onceCloseRemote.Close()
-		log.Println("close remote because local is normally closed but remote is not a WriteCloser", reflect.TypeOf(remote).String(), err)
+		defer onceCloseRemote.Close()
+		_, _ = io.Copy(remote, local)
 	}()
 
 	go func() {
@@ -122,22 +97,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		if _, err := io.Copy(local, remote); err != nil {
-			// Abnormal close.
-			err2 := onceCloseLocal.Close()
-			log.Println("close local because remote is abnormally closed", err, err2)
-			return
-		}
-
-		// EOF or the remote actively closed the connection.
-		if cw, ok := local.(WriteCloser); ok {
-			err := cw.CloseWrite()
-			log.Println("close write of local because remote read is normally closed", err)
-			return
-		}
-
-		err = onceCloseLocal.Close()
-		log.Println("close local because remote is normally closed but local is not a WriteCloser", reflect.TypeOf(local).String(), err)
+		defer onceCloseLocal.Close()
+		_, _ = io.Copy(local, remote)
 	}()
 
 	wg.Wait()

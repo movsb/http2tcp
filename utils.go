@@ -6,10 +6,6 @@ import (
 	"sync"
 )
 
-type WriteCloser interface {
-	CloseWrite() error
-}
-
 type OnceCloser struct {
 	io.Closer
 	once sync.Once
@@ -25,10 +21,6 @@ func (c *OnceCloser) Close() (err error) {
 type StdReadWriteCloser struct {
 	io.ReadCloser
 	io.WriteCloser
-
-	closed      bool
-	writeClosed bool
-	mu          sync.Mutex
 }
 
 func NewStdReadWriteCloser() *StdReadWriteCloser {
@@ -39,25 +31,8 @@ func NewStdReadWriteCloser() *StdReadWriteCloser {
 }
 
 func (c *StdReadWriteCloser) Close() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.closed {
-		return os.ErrInvalid
-	}
-
-	c.closed = true
-
-	var (
-		err1 error
-		err2 error
-	)
-
-	err1 = c.ReadCloser.Close()
-	if !c.writeClosed {
-		err2 = c.WriteCloser.Close()
-		c.writeClosed = true
-	}
+	err1 := c.ReadCloser.Close()
+	err2 := c.WriteCloser.Close()
 
 	if err1 != nil {
 		return err1
@@ -67,15 +42,4 @@ func (c *StdReadWriteCloser) Close() error {
 	}
 
 	return nil
-}
-
-func (c *StdReadWriteCloser) CloseWrite() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.closed || c.writeClosed {
-		return os.ErrInvalid
-	}
-	c.writeClosed = true
-	return c.WriteCloser.Close()
 }

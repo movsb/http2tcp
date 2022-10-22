@@ -10,7 +10,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -62,12 +61,7 @@ func (c *Client) Serve(listen string, to string) {
 
 func (c *Client) proxy(local io.ReadWriteCloser, addr string) error {
 	onceCloseLocal := &OnceCloser{Closer: local}
-	defer func() {
-		if err := onceCloseLocal.Close(); err != nil {
-			log.Println("error closing local", err)
-			return
-		}
-	}()
+	defer onceCloseLocal.Close()
 
 	u, err := url.Parse(c.server)
 	if err != nil {
@@ -104,12 +98,7 @@ func (c *Client) proxy(local io.ReadWriteCloser, addr string) error {
 	}
 
 	onceCloseRemote := &OnceCloser{Closer: remote}
-	defer func() {
-		if err := onceCloseRemote.Close(); err != nil {
-			log.Println("error closing server connection", err)
-			return
-		}
-	}()
+	defer onceCloseRemote.Close()
 
 	v := u.Query()
 	v.Set(`addr`, addr)
@@ -143,20 +132,8 @@ func (c *Client) proxy(local io.ReadWriteCloser, addr string) error {
 	go func() {
 		defer wg.Done()
 
-		if _, err := io.Copy(remote, local); err != nil {
-			err2 := onceCloseRemote.Close()
-			log.Println("close remote because local is abnormally closed", err, err2)
-			return
-		}
-
-		if cw, ok := remote.(WriteCloser); ok {
-			err := cw.CloseWrite()
-			log.Println("close write of remote because local read is normally closed", err)
-			return
-		}
-
-		err = onceCloseRemote.Close()
-		log.Println("close remote because local is normally closed but remote is not a WriteCloser", reflect.TypeOf(remote).String(), err)
+		defer onceCloseRemote.Close()
+		_, _ = io.Copy(remote, local)
 	}()
 
 	go func() {
@@ -169,20 +146,8 @@ func (c *Client) proxy(local io.ReadWriteCloser, addr string) error {
 			}
 		}
 
-		if _, err := io.Copy(local, remote); err != nil {
-			err2 := onceCloseLocal.Close()
-			log.Println("close local because remote is abnormally closed", err, err2)
-			return
-		}
-
-		if cw, ok := local.(WriteCloser); ok {
-			err := cw.CloseWrite()
-			log.Println("close write of local because remote is normally closed", err)
-			return
-		}
-
-		err = onceCloseLocal.Close()
-		log.Println("close local because remote is normally closed but local is not a WriteCloser", reflect.TypeOf(local).String(), err)
+		defer onceCloseLocal.Close()
+		_, _ = io.Copy(local, remote)
 	}()
 
 	wg.Wait()
