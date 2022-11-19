@@ -16,8 +16,9 @@ import (
 )
 
 type Client struct {
-	server string
-	token  string
+	server    string
+	token     string
+	userAgent string
 }
 
 func NewClient(server string, token string) *Client {
@@ -28,6 +29,12 @@ func NewClient(server string, token string) *Client {
 		server: server,
 		token:  token,
 	}
+}
+
+// If non-empty, when connecting to the server, this User-Agent will be used
+// instead of the default `Go-http-client/1.1`.
+func (c *Client) SetUserAgent(userAgent string) {
+	c.userAgent = userAgent
 }
 
 func (c *Client) Std(to string) {
@@ -111,6 +118,10 @@ func (c *Client) proxy(local io.ReadWriteCloser, addr string) error {
 	req.Header.Add(`Connection`, `upgrade`)
 	req.Header.Add(`Upgrade`, httpHeaderUpgrade)
 	req.Header.Add(`Authorization`, fmt.Sprintf(`%s %s`, authHeaderType, c.token))
+	if c.userAgent != `` {
+		req.Header.Add(`User-Agent`, c.userAgent)
+	}
+
 	if err := req.Write(remote); err != nil {
 		return err
 	}

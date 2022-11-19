@@ -16,11 +16,12 @@ func main() {
 	runAsServer := flag.BoolP(`server`, `s`, false, `Run as server. [S]`)
 	runAsClient := flag.BoolP(`client`, `c`, false, `Run as client. [C]`)
 
-	listenAddr := flag.StringP(`listen`, `l`, ``, `Listen address [SC]`)
 	serverEndpoint := flag.StringP(`endpoint`, `e`, ``, `Server endpoint. [C]`)
-	destination := flag.StringP(`destination`, `d`, ``, `The destination address to connect to [C]`)
-
 	token := flag.StringP(`token`, `t`, ``, `The token used between client and server [SC]`)
+	userAgent := flag.String(`user-agent`, ``, `Use this User-Agent instead of the default Go-http-client/1.1 [C]`)
+
+	listenAddr := flag.StringP(`listen`, `l`, ``, `Listen address [SC]`)
+	destination := flag.StringP(`destination`, `d`, ``, `The destination address to connect to [C]`)
 
 	help := flag.BoolP(`help`, `h`, false, `Show this help`)
 
@@ -47,6 +48,7 @@ func main() {
 	}
 	if *runAsClient {
 		c := NewClient(*serverEndpoint, *token)
+		c.SetUserAgent(*userAgent)
 		if *listenAddr != `` {
 			c.Serve(*listenAddr, *destination)
 		} else {

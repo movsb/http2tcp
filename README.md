@@ -58,7 +58,7 @@ This is actually the standard way to use HTTP2TCP.
 server {
 	server_name example.com;
 	listen 443 ssl http2;
-	location /some-path/ {
+	location = /some-path/ {
 		proxy_http_version 1.1;
 		proxy_set_header Host $host;
 		proxy_set_header Upgrade $http_upgrade;
