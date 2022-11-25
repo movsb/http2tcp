@@ -70,72 +70,12 @@ func (c *Client) proxy(local io.ReadWriteCloser, addr string) error {
 	onceCloseLocal := &OnceCloser{Closer: local}
 	defer onceCloseLocal.Close()
 
-	u, err := url.Parse(c.server)
+	remote, bior, err := c.dialServer(addr)
 	if err != nil {
 		return err
 	}
-	host := u.Hostname()
-	port := u.Port()
-	if port == `` {
-		switch u.Scheme {
-		case `http`:
-			port = "80"
-		case `https`:
-			port = `443`
-		default:
-			return fmt.Errorf(`unknown scheme: %s`, u.Scheme)
-		}
-	}
-	serverAddr := net.JoinHostPort(host, port)
-
-	var remote net.Conn
-	if u.Scheme == `http` {
-		remote, err = net.Dial(`tcp`, serverAddr)
-		if err != nil {
-			return err
-		}
-	} else if u.Scheme == `https` {
-		remote, err = tls.Dial(`tcp`, serverAddr, nil)
-		if err != nil {
-			return err
-		}
-	}
-	if remote == nil {
-		return fmt.Errorf("no server connection made")
-	}
-
 	onceCloseRemote := &OnceCloser{Closer: remote}
 	defer onceCloseRemote.Close()
-
-	v := u.Query()
-	v.Set(`addr`, addr)
-	u.RawQuery = v.Encode()
-
-	req, err := http.NewRequest(http.MethodGet, u.String(), nil)
-	if err != nil {
-		return err
-	}
-	req.Header.Add(`Connection`, `upgrade`)
-	req.Header.Add(`Upgrade`, httpHeaderUpgrade)
-	req.Header.Add(`Authorization`, fmt.Sprintf(`%s %s`, authHeaderType, c.token))
-	if c.userAgent != `` {
-		req.Header.Add(`User-Agent`, c.userAgent)
-	}
-
-	if err := req.Write(remote); err != nil {
-		return err
-	}
-	bior := bufio.NewReader(remote)
-	resp, err := http.ReadResponse(bior, req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusSwitchingProtocols {
-		buf := bytes.NewBuffer(nil)
-		resp.Write(buf)
-		return fmt.Errorf("statusCode != 101:\n%s", buf.String())
-	}
 
 	wg := &sync.WaitGroup{}
 	wg.Add(2)
@@ -163,4 +103,73 @@ func (c *Client) proxy(local io.ReadWriteCloser, addr string) error {
 
 	wg.Wait()
 	return nil
+}
+
+func (c *Client) dialServer(destination string) (net.Conn, *bufio.Reader, error) {
+	u, err := url.Parse(c.server)
+	if err != nil {
+		return nil, nil, err
+	}
+	host := u.Hostname()
+	port := u.Port()
+	if port == `` {
+		switch u.Scheme {
+		case `http`:
+			port = "80"
+		case `https`:
+			port = `443`
+		default:
+			return nil, nil, fmt.Errorf(`unknown scheme: %s`, u.Scheme)
+		}
+	}
+	serverAddr := net.JoinHostPort(host, port)
+
+	var remote net.Conn
+	if u.Scheme == `http` {
+		remote, err = net.Dial(`tcp`, serverAddr)
+		if err != nil {
+			return nil, nil, err
+		}
+	} else if u.Scheme == `https` {
+		remote, err = tls.Dial(`tcp`, serverAddr, nil)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	if remote == nil {
+		return nil, nil, fmt.Errorf("no server connection made")
+	}
+
+	v := u.Query()
+	v.Set(`addr`, destination)
+	body := strings.NewReader(v.Encode())
+
+	req, err := http.NewRequest(http.MethodPost, u.String(), body)
+	if err != nil {
+		return nil, nil, err
+	}
+	req.Header.Add(`Connection`, `upgrade`)
+	req.Header.Add(`Upgrade`, httpHeaderUpgrade)
+	req.Header.Add(`Authorization`, fmt.Sprintf(`%s %s`, authHeaderType, c.token))
+	req.Header.Add(`Content-Type`, `application/x-www-form-urlencoded`)
+	req.Header.Add(`Content-Length`, fmt.Sprint(body.Len()))
+	if c.userAgent != `` {
+		req.Header.Add(`User-Agent`, c.userAgent)
+	}
+
+	if err := req.Write(remote); err != nil {
+		return nil, nil, err
+	}
+	bior := bufio.NewReader(remote)
+	resp, err := http.ReadResponse(bior, req)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		buf := bytes.NewBuffer(nil)
+		resp.Write(buf)
+		return nil, nil, fmt.Errorf("statusCode != 101:\n%s", buf.String())
+	}
+	return remote, bior, nil
 }

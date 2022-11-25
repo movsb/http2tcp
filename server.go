@@ -45,8 +45,13 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
 	// the URL.Path doesn't matter.
-	addr := r.URL.Query().Get("addr")
+	addr := r.PostFormValue(`addr`)
 	remote, err := net.Dial(`tcp`, addr)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
