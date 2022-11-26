@@ -16,18 +16,20 @@ import (
 )
 
 type Client struct {
-	server    string
-	token     string
-	userAgent string
+	server     string
+	publicKey  PublicKey  // for server
+	privateKey PrivateKey // for client
+	userAgent  string
 }
 
-func NewClient(server string, token string) *Client {
+func NewClient(server string, publicKey PublicKey) *Client {
 	if !strings.Contains(server, "://") {
 		server = "http://" + server
 	}
 	return &Client{
-		server: server,
-		token:  token,
+		server:     server,
+		publicKey:  publicKey,
+		privateKey: NewPrivateKey(),
 	}
 }
 
@@ -140,18 +142,28 @@ func (c *Client) dialServer(destination string) (net.Conn, *bufio.Reader, error)
 		return nil, nil, fmt.Errorf("no server connection made")
 	}
 
-	v := u.Query()
-	v.Set(`addr`, destination)
-	body := strings.NewReader(v.Encode())
+	body := bytes.NewBuffer(nil)
+	clientPublicKey := c.privateKey.PublicKey()
+	body.Write(clientPublicKey[:])
+
+	g, err := NewAesGcm(c.privateKey.SharedSecret(c.publicKey))
+	if err != nil {
+		return nil, nil, err
+	}
+	encrypted, err := g.Encrypt([]byte(destination))
+	if err != nil {
+		return nil, nil, err
+	}
+	body.Write(encrypted)
 
 	req, err := http.NewRequest(http.MethodPost, u.String(), body)
 	if err != nil {
 		return nil, nil, err
 	}
+
 	req.Header.Add(`Connection`, `upgrade`)
 	req.Header.Add(`Upgrade`, httpHeaderUpgrade)
-	req.Header.Add(`Authorization`, fmt.Sprintf(`%s %s`, authHeaderType, c.token))
-	req.Header.Add(`Content-Type`, `application/x-www-form-urlencoded`)
+	req.Header.Add(`Content-Type`, `application/octet-stream`)
 	req.Header.Add(`Content-Length`, fmt.Sprint(body.Len()))
 	if c.userAgent != `` {
 		req.Header.Add(`User-Agent`, c.userAgent)

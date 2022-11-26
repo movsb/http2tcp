@@ -2,57 +2,61 @@ package main
 
 import (
 	"io"
+	"io/ioutil"
 	"log"
 	"net"
 	"net/http"
-	"strings"
 	"sync"
 	"sync/atomic"
 )
 
 const (
-	authHeaderType    = `HTTP2TCP`
 	httpHeaderUpgrade = `http2tcp/1.0`
 )
 
 type Server struct {
-	token string
-	conn  int32 // number of active connections
+	privateKey PrivateKey
+	conn       int32 // number of active connections
 }
 
-func NewServer(token string) *Server {
+func NewServer(privateKey PrivateKey) *Server {
 	return &Server{
-		token: token,
+		privateKey: privateKey,
 	}
-}
-
-func (s *Server) auth(r *http.Request) bool {
-	a := strings.Fields(r.Header.Get("Authorization"))
-	if len(a) == 2 && a[0] == authHeaderType && a[1] == s.token {
-		return true
-	}
-	return false
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if !s.auth(r) {
-		http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
-		return
-	}
-
 	if upgrade := r.Header.Get(`Upgrade`); upgrade != httpHeaderUpgrade {
 		http.Error(w, `upgrade error`, http.StatusBadRequest)
 		return
 	}
 
-	if err := r.ParseForm(); err != nil {
+	if r.ContentLength < 32 || r.ContentLength > 1<<10 {
+		http.Error(w, `invalid address`, http.StatusBadRequest)
+		return
+	}
+
+	body, err := ioutil.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, `invalid body`, http.StatusBadRequest)
+		return
+	}
+	publicKey := PublicKey{}
+	copy(publicKey[:], body[:32])
+
+	g, err := NewAesGcm(s.privateKey.SharedSecret(publicKey))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	destination, err := g.Decrypt(body[32:])
+	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	// the URL.Path doesn't matter.
-	addr := r.PostFormValue(`addr`)
-	remote, err := net.Dial(`tcp`, addr)
+	remote, err := net.Dial(`tcp`, string(destination))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -72,6 +76,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	log.Println("enter: number of connections:", atomic.AddInt32(&s.conn, +1))
 	defer func() { log.Println("leave: number of connections:", atomic.AddInt32(&s.conn, -1)) }()
+
+	log.Println(`User:`, publicKey.String(), `Destination:`, string(destination))
 
 	wg := &sync.WaitGroup{}
 	wg.Add(2)
