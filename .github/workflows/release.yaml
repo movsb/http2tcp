@@ -1,0 +1,26 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions/setup-go@v3
+        with:
+          go-version: '1.18'
+      - name: Cross building
+        run: '{ GOOS=linux GOARCH=amd64 go build -o .build/http2tcp-linux-amd64; } && { GOOS=darwin GOARCH=amd64 go build -o .build/http2tcp-darwin-amd64; }'
+      - name: Create Release
+        uses: ncipollo/release-action@v1.11.2
+        with:
+          name: main
+          allowUpdates: true
+          artifactErrorsFailBuild: true
+          artifacts: http2tcp-linux-amd64,http2tcp-darwin-amd64
+          commit: main
+          tag: release-main-latest
