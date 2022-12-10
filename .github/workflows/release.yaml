@@ -1,0 +1,43 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions/setup-go@v3
+        with:
+          go-version: '1.18'
+      - name: Cross building
+        run: |
+          GOOS=linux GOARCH=amd64 go build -o .build/http2tcp-linux-amd64
+          GOOS=darwin GOARCH=amd64 go build -o .build/http2tcp-darwin-amd64
+      - name: Generate body
+        run: |
+          echo '**Build At**:
+          
+          * `'"$(date)"'`
+          * `'"$(TZ=Asia/Shanghai date)"'`
+          
+          **sha256sum**:
+
+          ```-
+          '"$(cd .build && sha256sum *)"'
+          ```
+          ' > body.md
+      - name: Create Release
+        uses: ncipollo/release-action@v1.11.2
+        with:
+          name: main
+          allowUpdates: true
+          artifactErrorsFailBuild: true
+          replacesArtifacts: true
+          artifacts: .build/*
+          commit: main
+          tag: release-main-latest
+          bodyFile: body.md
