@@ -1,5 +1,4 @@
 FROM scratch
 
-COPY http2tcp /
-ENTRYPOINT ["/http2tcp"]
-
+COPY .build/http2tcp-$TARGETOS-TARGETARCH /http2tcp
+CMD ["/http2tcp"]

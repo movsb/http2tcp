@@ -17,6 +17,7 @@ jobs:
         run: |
           GOOS=linux GOARCH=amd64 go build -o .build/http2tcp-linux-amd64
           GOOS=darwin GOARCH=amd64 go build -o .build/http2tcp-darwin-amd64
+          GOOS=darwin GOARCH=arm64 go build -o .build/http2tcp-darwin-arm64
       - name: Generate body
         run: |
           echo '**Build At**:
