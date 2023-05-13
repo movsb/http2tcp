@@ -1,5 +1,7 @@
 # http2tcp
 
+Branch **websocket** is a rewrite of this utility using websocket.
+
 **http2tcp** is a simple client & server program that turns an HTTP connection to a TCP connection.
 
 This is kind of useful if you want to hide all ports traffic other than the standard well-known ports 80 and 443.

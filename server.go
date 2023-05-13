@@ -1,13 +1,16 @@
 package main
 
 import (
-	"io"
+	"context"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"strings"
 	"sync"
 	"sync/atomic"
+
+	"nhooyr.io/websocket"
 )
 
 const (
@@ -18,11 +21,18 @@ const (
 type Server struct {
 	token string
 	conn  int32 // number of active connections
+
+	sessions          map[int64]*Session
+	nextSessionID     int64
+	lockNextSessionID sync.Mutex
+	sessionsLock      sync.Mutex
 }
 
 func NewServer(token string) *Server {
 	return &Server{
-		token: token,
+		token:         token,
+		sessions:      make(map[int64]*Session),
+		nextSessionID: 1,
 	}
 }
 
@@ -40,66 +50,116 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if upgrade := r.Header.Get(`Upgrade`); upgrade != httpHeaderUpgrade {
-		http.Error(w, `upgrade error`, http.StatusBadRequest)
-		return
-	}
-
-	// the URL.Path doesn't matter.
-	addr := r.URL.Query().Get("addr")
-	remote, err := net.Dial(`tcp`, addr)
+	session /* may be nil */, err := s.acceptSession(w, r)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		log.Println(`failed to accept session:`, err)
+		// already hijacked
+		// http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
 		return
 	}
-	onceCloseRemote := &OnceCloser{Closer: remote}
-	defer onceCloseRemote.Close()
-
-	w.Header().Add(`Content-Length`, `0`)
-	w.WriteHeader(http.StatusSwitchingProtocols)
-	local, bio, err := w.(http.Hijacker).Hijack()
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	onceCloseLocal := &OnceCloser{Closer: local}
-	defer onceCloseLocal.Close()
 
 	log.Println("enter: number of connections:", atomic.AddInt32(&s.conn, +1))
 	defer func() { log.Println("leave: number of connections:", atomic.AddInt32(&s.conn, -1)) }()
 
-	wg := &sync.WaitGroup{}
-	wg.Add(2)
-
-	go func() {
-		defer wg.Done()
-
-		// The returned bufio.Reader may contain unprocessed buffered data from the client.
-		// Copy them to dst so we can use src directly.
-		if n := bio.Reader.Buffered(); n > 0 {
-			n64, err := io.CopyN(remote, bio, int64(n))
-			if n64 != int64(n) || err != nil {
-				log.Println("io.CopyN:", n64, err)
-				return
-			}
-		}
-
-		defer onceCloseRemote.Close()
-		_, _ = io.Copy(remote, local)
-	}()
-
-	go func() {
-		defer wg.Done()
-
-		// flush any unwritten data.
-		if err := bio.Writer.Flush(); err != nil {
-			log.Println(`bio.Writer.Flush():`, err)
+	if session != nil {
+		if err := session.Run(context.Background()); err != nil {
+			log.Println(`failed to run session:`, err)
 			return
 		}
+	}
+}
 
-		defer onceCloseLocal.Close()
-		_, _ = io.Copy(local, remote)
+func (s *Server) getNextSessionID() int64 {
+	s.lockNextSessionID.Lock()
+	defer s.lockNextSessionID.Unlock()
+	id := s.nextSessionID
+	s.nextSessionID++
+	return id
+}
+
+// 注意，已经存在的会话不会返回。
+func (s *Server) acceptSession(w http.ResponseWriter, r *http.Request) (*Session, error) {
+	conn, err := websocket.Accept(w, r, nil)
+	if err != nil {
+		log.Println(`failed to accept websocket session:`, err)
+		return nil, err
+	}
+
+	shouldCloseConn := true
+	defer func() {
+		if shouldCloseConn {
+			conn.Close(websocket.StatusInternalError, "closed in defer")
+		}
 	}()
 
-	wg.Wait()
+	transporter := NewServerTransporter(context.Background(), conn)
+	beginSessionRequest := BeginSessionRequest{}
+	if err := transporter.Read(&beginSessionRequest); err != nil {
+		log.Println(`failed to read begin session request:`, err)
+		return nil, err
+	}
+
+	// 全新的连接
+	if beginSessionRequest.SessionID == 0 {
+		remote, err := net.Dial(`tcp`, beginSessionRequest.Connect)
+		if err != nil {
+			log.Println(`failed to dial remote:`, err)
+			beginSessionResponse := BeginSessionResponse{
+				SessionID: 0,
+				Reason:    fmt.Sprintf(`failed to dial remote: %v`, err),
+			}
+			if err := transporter.Write(&beginSessionResponse); err != nil {
+				return nil, fmt.Errorf(`failed to write begin session response: %w`, err)
+			}
+			return nil, err
+		}
+
+		sessionID := s.getNextSessionID()
+
+		beginSessionResponse := BeginSessionResponse{
+			SessionID: sessionID,
+			Reason:    ``,
+		}
+		if err := transporter.Write(&beginSessionResponse); err != nil {
+			return nil, fmt.Errorf(`failed to write begin session response: %w`, err)
+		}
+
+		session := NewServerSession(sessionID, remote, transporter)
+
+		s.sessionsLock.Lock()
+		s.sessions[sessionID] = session
+		s.sessionsLock.Unlock()
+
+		shouldCloseConn = false
+		return session, nil
+	}
+
+	// 尝试恢复会话
+	s.sessionsLock.Lock()
+
+	session, ok := s.sessions[beginSessionRequest.SessionID]
+
+	if !ok {
+		s.sessionsLock.Unlock()
+
+		log.Println(`session not found:`, beginSessionRequest.SessionID)
+		beginSessionResponse := BeginSessionResponse{
+			SessionID: 0,
+			Reason:    fmt.Sprintf(`session not found: %v`, err),
+		}
+		if err := transporter.Write(&beginSessionResponse); err != nil {
+			return nil, fmt.Errorf(`failed to write begin session response: %w`, err)
+		}
+
+		shouldCloseConn = false
+		return session, nil
+	}
+
+	s.sessionsLock.Unlock()
+
+	// 存在会话，更新到新的客户端
+	session.BindTransporter(transporter)
+
+	shouldCloseConn = false
+	return nil, nil
 }
