@@ -61,9 +61,8 @@ func (c *Client) Serve(listen string, to string) {
 }
 
 func (c *Client) proxy(local io.ReadWriteCloser, addr string) error {
-	onceCloseLocal := &OnceCloser{Closer: local}
-	defer onceCloseLocal.Close()
-
+	// onceCloseLocal := &OnceCloser{Closer: local}
+	// defer onceCloseLocal.Close()
 	session := NewClientSession(local, c.server, c.token, addr)
 	return session.Run(context.Background())
 }

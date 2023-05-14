@@ -19,27 +19,53 @@ func (c *OnceCloser) Close() (err error) {
 }
 
 type StdReadWriteCloser struct {
-	io.ReadCloser
-	io.WriteCloser
+	closed chan struct{}
+	read   chan []byte
+	err    error
 }
 
 func NewStdReadWriteCloser() *StdReadWriteCloser {
-	return &StdReadWriteCloser{
-		ReadCloser:  os.Stdin,
-		WriteCloser: os.Stdout,
+	std := &StdReadWriteCloser{
+		closed: make(chan struct{}),
+		read:   make(chan []byte),
+	}
+	go std.bgRead()
+	return std
+}
+
+func (c *StdReadWriteCloser) bgRead() {
+	for {
+		var buf []byte
+		select {
+		case <-c.closed:
+			return
+		case buf = <-c.read:
+		}
+		n, err := os.Stdin.Read(buf)
+		c.err = err
+		c.read <- buf[:n]
 	}
 }
 
+func (c *StdReadWriteCloser) Read(p []byte) (int, error) {
+	select {
+	case <-c.closed:
+		return 0, io.EOF
+	case c.read <- p:
+	}
+	select {
+	case <-c.closed:
+		return 0, io.EOF
+	case p = <-c.read:
+		return len(p), c.err
+	}
+}
+
+func (c *StdReadWriteCloser) Write(p []byte) (int, error) {
+	return os.Stdout.Write(p)
+}
+
 func (c *StdReadWriteCloser) Close() error {
-	err1 := c.ReadCloser.Close()
-	err2 := c.WriteCloser.Close()
-
-	if err1 != nil {
-		return err1
-	}
-	if err2 != nil {
-		return err2
-	}
-
+	close(c.closed)
 	return nil
 }

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync/atomic"
+	"time"
 
 	"nhooyr.io/websocket"
 )
@@ -14,6 +16,9 @@ type Transporter struct {
 	ctx context.Context
 
 	conn *websocket.Conn
+
+	isClient bool
+	id       int64
 }
 
 type BeginSessionRequest struct {
@@ -30,9 +35,13 @@ type BeginSessionResponse struct {
 }
 
 type RelayData struct {
-	Seq  int64
-	Data []byte
+	TxSeq int64
+	RxSeq int64
+	Data  []byte
+	Time  time.Time
 }
+
+var gTransporterID atomic.Int64
 
 // wss://localhost/path
 func NewClientTransporter(ctx context.Context, server string, token string, connect string, session int64) (*Transporter, int64, error) {
@@ -51,8 +60,10 @@ func NewClientTransporter(ctx context.Context, server string, token string, conn
 	}
 
 	t := &Transporter{
-		ctx:  ctx,
-		conn: conn,
+		ctx:      ctx,
+		conn:     conn,
+		isClient: true,
+		id:       gTransporterID.Add(1),
 	}
 
 	shouldCloseConn := true
@@ -82,9 +93,15 @@ func NewClientTransporter(ctx context.Context, server string, token string, conn
 
 func NewServerTransporter(ctx context.Context, conn *websocket.Conn) *Transporter {
 	return &Transporter{
-		ctx:  ctx,
-		conn: conn,
+		ctx:      ctx,
+		conn:     conn,
+		isClient: false,
+		id:       gTransporterID.Add(1),
 	}
+}
+
+func (t *Transporter) GetID() int64 {
+	return t.id
 }
 
 // TODO: 正确关闭会话，发送主动关闭请求，防止死等。
@@ -93,6 +110,12 @@ func (t *Transporter) Close() error {
 }
 
 func (t *Transporter) Read(out interface{}) error {
+	// ctx := t.ctx
+	// if t.isClient {
+	// var cancel context.CancelFunc
+	// ctx, cancel = context.WithTimeout(ctx, time.Second*30)
+	// defer cancel()
+	// }
 	ty, r, err := t.conn.Reader(t.ctx)
 	if err != nil {
 		return fmt.Errorf(`error reading: %w`, err)
@@ -104,12 +127,16 @@ func (t *Transporter) Read(out interface{}) error {
 		return fmt.Errorf(`error decoding: %w`, err)
 	}
 	// 其实已经读完了，感觉是 bug，需要手动触发一下
-	io.Copy(io.Discard, r)
+	if n, err := io.Copy(io.Discard, r); err != nil || n != 0 {
+		return fmt.Errorf(`error discarding: n=%d, err=%v`, n, err)
+	}
 	return nil
 }
 
 func (t *Transporter) Write(in interface{}) error {
-	w, err := t.conn.Writer(t.ctx, websocket.MessageBinary)
+	ctx, cancel := context.WithTimeout(t.ctx, time.Second*15)
+	defer cancel()
+	w, err := t.conn.Writer(ctx, websocket.MessageBinary)
 	if err != nil {
 		return fmt.Errorf(`error getting writer: %w`, err)
 	}

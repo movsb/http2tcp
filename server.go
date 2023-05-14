@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"strings"
 	"sync"
-	"sync/atomic"
 
 	"nhooyr.io/websocket"
 )
@@ -58,10 +57,13 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Println("enter: number of connections:", atomic.AddInt32(&s.conn, +1))
-	defer func() { log.Println("leave: number of connections:", atomic.AddInt32(&s.conn, -1)) }()
-
 	if session != nil {
+		defer func() {
+			s.sessionsLock.Lock()
+			defer s.sessionsLock.Unlock()
+			delete(s.sessions, session.id)
+			log.Println(`session deleted:`, session.id)
+		}()
 		if err := session.Run(context.Background()); err != nil {
 			log.Println(`failed to run session:`, err)
 			return
@@ -156,6 +158,13 @@ func (s *Server) acceptSession(w http.ResponseWriter, r *http.Request) (*Session
 	}
 
 	s.sessionsLock.Unlock()
+
+	beginSessionResponse := BeginSessionResponse{
+		SessionID: session.id,
+	}
+	if err := transporter.Write(&beginSessionResponse); err != nil {
+		return nil, fmt.Errorf(`failed to write begin session response: %w`, err)
+	}
 
 	// 存在会话，更新到新的客户端
 	session.BindTransporter(transporter)

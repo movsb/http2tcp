@@ -1,6 +1,7 @@
 package main
 
 import (
+	"container/list"
 	"context"
 	"errors"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -26,11 +28,19 @@ type Session struct {
 	// 对于远程来说，是远程连接。
 	conn io.ReadWriteCloser
 
-	// 接收包序列号（从 1 开始）
-	txSeq int64
-
 	// 发送包序列号（从 1 开始）
-	rxSeq int64
+	// 下一个包的。
+	// 发送成功后加一
+	txSeq atomic.Int64
+	// txCnt       atomic.Int64
+	txQueue     *list.List
+	txQueueLock sync.Mutex
+
+	// 接收包序列号（从 1 开始）
+	// 希望接收到的。
+	// 接收成功后加一。
+	rxSeq atomic.Int64
+	// rxCnt atomic.Int64
 
 	// TODO：读写分离
 	transporter       *Transporter
@@ -45,32 +55,41 @@ type Session struct {
 }
 
 func NewClientSession(conn io.ReadWriteCloser, server string, token string, connect string) *Session {
-	return &Session{
+	s := &Session{
 		id:       0,
-		txSeq:    1,
-		rxSeq:    1,
 		conn:     conn,
 		server:   server,
 		token:    token,
 		connect:  connect,
 		isClient: true,
 	}
+	s.txSeq.Store(1)
+	s.rxSeq.Store(1)
+	s.txQueue = list.New()
+	return s
 }
 
 func NewServerSession(id int64, conn io.ReadWriteCloser, transporter *Transporter) *Session {
-	return &Session{
+	s := &Session{
 		id:                id,
 		conn:              conn,
-		txSeq:             1,
-		rxSeq:             1,
 		transporter:       transporter,
 		isClient:          false,
 		chWaitTransporter: make(chan *Transporter),
 	}
+	s.txSeq.Store(1)
+	s.rxSeq.Store(1)
+	s.txQueue = list.New()
+	return s
 }
 
 // TODO：将来可以绑定多个，以实现读写分离
 func (s *Session) BindTransporter(transporter *Transporter) {
+	log.Println(`enter bind`)
+	defer log.Println(`leave bind`)
+	s.lockTransporter.Lock()
+	s.transporter.Close()
+	s.lockTransporter.Unlock()
 	s.chWaitTransporter <- transporter
 }
 
@@ -79,9 +98,13 @@ func (s *Session) Run(ctx context.Context) error {
 
 	defer log.Println(`session ended`)
 
+	onceClose := OnceCloser{Closer: s.conn}
+	defer onceClose.Close()
+
 	defer func() {
-		if err := s.conn.Close(); err != nil {
-			log.Println(`error closing session conn:`, err)
+		// 如果 reset 失败（比如服务器主动关闭，这是可以为空的。
+		if t := s.getTransporter(); t != nil {
+			t.Close()
 		}
 	}()
 
@@ -99,11 +122,13 @@ func (s *Session) Run(ctx context.Context) error {
 
 	go func() {
 		defer wg.Done()
+		defer onceClose.Close()
 		defer log.Println(`loopWrites exited`)
 		s.loopWrites(ctx)
 	}()
 	go func() {
 		defer wg.Done()
+		defer onceClose.Close()
 		defer log.Println(`loopReads exited`)
 		s.loopReads(ctx)
 	}()
@@ -115,20 +140,22 @@ func (s *Session) Run(ctx context.Context) error {
 
 func (s *Session) resetTransporter(old *Transporter) error {
 	s.lockTransporter.Lock()
-	defer s.lockTransporter.Unlock()
 
 	// 关两次没效果
 	old.Close()
-	old.Close()
 
 	if old != s.transporter {
+		s.lockTransporter.Unlock()
 		log.Println(`already reset, use instead`)
 		return nil
 	}
 
 	if s.isClient {
+		defer s.lockTransporter.Unlock()
+
 		t, sid, err := NewClientTransporter(s.ctx, s.server, s.token, s.connect, s.id)
 		if err != nil {
+			s.transporter = nil
 			return fmt.Errorf(`error resetting transport: %w`, err)
 		}
 		if sid != s.id {
@@ -141,13 +168,17 @@ func (s *Session) resetTransporter(old *Transporter) error {
 		return nil
 	}
 
+	s.lockTransporter.Unlock()
+
 	// 要等待主动连接，但是最多等10分钟
 	// TODO
+	log.Println(`waiting for client reconnection`)
+	defer log.Println(`waited for client reconnection`)
 	select {
 	case s.transporter = <-s.chWaitTransporter:
 		log.Println(`client reconnected`)
 		return nil
-	case <-time.After(time.Minute * 5):
+	case <-time.After(time.Minute):
 		log.Println(`timed out, client not reconnected`)
 		return fmt.Errorf(`actively closed: %v`, `timed out`)
 	}
@@ -162,24 +193,32 @@ func (s *Session) getTransporter() *Transporter {
 
 // 读远程，写本地。
 func (s *Session) loopReads(ctx context.Context) {
+	reset := false
+	transporter := s.getTransporter()
+
 	for {
-		reset := false
 		data := RelayData{}
 
-		transporter := s.getTransporter()
+		// if s.isClient && s.txCnt >= 1<<20 {
+		// 	log.Println(`data reached limit, resetting`)
+		// 	reset = true
+		// }
 
 		for {
 			if reset {
 				if err := s.resetTransporter(transporter); err != nil {
 					if strings.Contains(err.Error(), `actively closed`) {
+						log.Println(`server closed, exiting`)
 						return
 					}
 					log.Println(`failed to reset transporter, trying again:`, err)
 					time.Sleep(time.Second * 3)
 					continue
 				}
-				transporter = s.getTransporter()
+				reset = false
 			}
+
+			transporter = s.getTransporter()
 
 			if err := transporter.Read(&data); err != nil {
 				log.Println(`error decoding data, trying again:`, err)
@@ -192,11 +231,12 @@ func (s *Session) loopReads(ctx context.Context) {
 
 		// 数据校验
 		switch {
-		case data.Seq < s.rxSeq:
-			log.Println(`redundant data received, dropping:`, data.Seq)
+		case data.TxSeq < s.rxSeq.Load():
+			log.Printf(`redundant data received, dropping: data=%d, session=%d`, data.TxSeq, s.rxSeq.Load())
 			continue
-		case data.Seq > s.rxSeq:
-			log.Println(`invalid data received, exiting:`, data.Seq, s.rxSeq)
+		case data.TxSeq > s.rxSeq.Load():
+			log.Printf(`invalid data received, exiting: data=%d, session=%d`, data.TxSeq, s.rxSeq.Load())
+			transporter.Close()
 			return
 		}
 
@@ -206,19 +246,48 @@ func (s *Session) loopReads(ctx context.Context) {
 		}
 
 		// 读取成功
-		log.Printf(`recv seq: %v, bytes: %d`, s.rxSeq, len(data.Data))
-		s.rxSeq++
+		log.Printf(`recv seq: %v, bytes: %d, tid: %d`, s.rxSeq.Load(), len(data.Data), transporter.GetID())
+		s.rxSeq.Add(1)
+
+		// 发送太久，重置。
+		if time.Since(data.Time) > time.Second*5 {
+			log.Println(`timed out waiting for data, resetting`)
+			reset = true
+		}
+
+		// s.rxCnt.Add(int64(len(data.Data)))
+
+		// 对方成功读取数据后删除内存数据
+		nRemoved := 0
+		s.txQueueLock.Lock()
+		for {
+			front := s.txQueue.Front()
+			if front == nil {
+				break // should be here
+			}
+			elem := front.Value.(*RelayData)
+			if elem.TxSeq < data.RxSeq {
+				s.txQueue.Remove(front)
+				nRemoved++
+				continue
+			}
+			break
+		}
+		s.txQueueLock.Unlock()
+		log.Printf(`removed %d data in tx queue`, nRemoved)
 	}
 }
 
 // 读本地，写远程。
 func (s *Session) loopWrites(ctx context.Context) {
 	buf := make([]byte, 16<<10)
+	reset := false
 
 	for {
 		nr, err := s.conn.Read(buf)
 		if err != nil {
 			if errors.Is(err, io.EOF) {
+				log.Println(`net.conn eof, exiting`)
 				return
 			}
 			log.Println(`failed to read local/remote, exiting:`, err)
@@ -226,12 +295,26 @@ func (s *Session) loopWrites(ctx context.Context) {
 		}
 
 		data := RelayData{
-			Seq:  s.txSeq,
-			Data: buf[:nr],
+			TxSeq: s.txSeq.Load(),
+			RxSeq: s.rxSeq.Load(),
+			Data:  buf[:nr],
+			Time:  time.Now(),
 		}
+		s.txSeq.Add(1)
 
-		reset := false
+		// 写入队列，发送，并等待对方成功读取后再删除
+		s.txQueueLock.Lock()
+		s.txQueue.PushBack(&data)
+		if s.txQueue.Len() > 100 {
+			log.Println(`too many data in tx queue:`, s.txQueue.Len())
+		}
+		s.txQueueLock.Unlock()
+
 		transporter := s.getTransporter()
+		if transporter == nil {
+			log.Println(`transporter closed, exiting`)
+			return
+		}
 
 		for {
 			if reset {
@@ -243,20 +326,74 @@ func (s *Session) loopWrites(ctx context.Context) {
 					time.Sleep(time.Second * 3)
 					continue
 				}
-				transporter = s.getTransporter()
+				reset = false
+				goto reconnected
 			}
 
-			if err := transporter.Write(&data); err != nil {
+			transporter = s.getTransporter()
+			if transporter == nil {
+				log.Println(`transporter closed, exiting`)
+				return
+			}
+
+			if err := transporter.Write(data); err != nil {
 				log.Println(`error write data, trying again:`, err)
 				reset = true
 				continue
 			}
 
-			break
+			// 发送成功
+			log.Printf(`sent seq: %v, bytes: %d, tid: %d`, data.TxSeq, len(data.Data), transporter.GetID())
+			goto next
+
 		}
 
-		// 发送成功
-		log.Printf(`sent seq: %v, bytes: %d`, s.txSeq, len(data.Data))
-		s.txSeq++
+	reconnected:
+		for front := (*list.Element)(nil); ; {
+			s.txQueueLock.Lock()
+			if front == nil {
+				front = s.txQueue.Front()
+			} else {
+				front = front.Next()
+			}
+			s.txQueueLock.Unlock()
+			if front == nil {
+				break // should be here
+			}
+
+			data := front.Value.(*RelayData)
+
+			for {
+				if reset {
+					if err := s.resetTransporter(transporter); err != nil {
+						if strings.Contains(err.Error(), `actively closed`) {
+							return
+						}
+						log.Println(`failed to reset transporter, trying again:`, err)
+						time.Sleep(time.Second * 3)
+						continue
+					}
+					reset = false
+				}
+
+				transporter = s.getTransporter()
+				if transporter == nil {
+					log.Println(`transporter closed, exiting`)
+					return
+				}
+
+				if err := transporter.Write(data); err != nil {
+					log.Println(`error write data, trying again:`, err)
+					reset = true
+					continue
+				}
+
+				// 发送成功
+				log.Printf(`sent seq: %v, bytes: %d, tid: %d`, data.TxSeq, len(data.Data), transporter.GetID())
+
+				break
+			}
+		}
+	next:
 	}
 }
