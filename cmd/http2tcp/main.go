@@ -40,14 +40,19 @@ func main() {
 		return
 	}
 	if *runAsServer {
-		s := NewServer(*token)
+		s := &Server{
+			Token: *token,
+		}
 		if err := http.ListenAndServe(*listenAddr, s); err != nil {
 			log.Fatalln(err)
 		}
 		return
 	}
 	if *runAsClient {
-		c := NewClient(*serverEndpoint, *token)
+		c := &Client{
+			Server: *serverEndpoint,
+			Token:  *token,
+		}
 		c.SetUserAgent(*userAgent)
 		if *listenAddr != `` {
 			c.Serve(*listenAddr, *destination)
