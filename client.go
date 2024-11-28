@@ -2,6 +2,7 @@ package http2tcp
 
 import (
 	"bytes"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"net/http"
@@ -20,7 +21,13 @@ func Dial(server string, token string, userAgent string) (io.ReadWriteCloser, er
 		req.Header.Add(`User-Agent`, userAgent)
 	}
 
-	rsp, err := http.DefaultClient.Do(req)
+	hc := &http.Client{
+		Transport: &http.Transport{
+			TLSNextProto: map[string]func(string, *tls.Conn) http.RoundTripper{},
+		},
+	}
+
+	rsp, err := hc.Do(req)
 	if err != nil {
 		return nil, err
 	}
