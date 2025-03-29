@@ -15,10 +15,10 @@ jobs:
           go-version: '1.18'
       - name: Cross building
         run: |
-          CGO_ENABLED=0 GOOS=linux  GOARCH=amd64 go build -o .build/http2tcp-linux-amd64
-          CGO_ENABLED=0 GOOS=linux  GOARCH=arm64 go build -o .build/http2tcp-linux-arm64
-          CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -o .build/http2tcp-darwin-amd64
-          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -o .build/http2tcp-darwin-arm64
+          CGO_ENABLED=0 GOOS=linux  GOARCH=amd64 go build -o .build/http2tcp-linux-amd64  ./cmd/http2tcp
+          CGO_ENABLED=0 GOOS=linux  GOARCH=arm64 go build -o .build/http2tcp-linux-arm64  ./cmd/http2tcp
+          CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -o .build/http2tcp-darwin-amd64 ./cmd/http2tcp
+          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -o .build/http2tcp-darwin-arm64 ./cmd/http2tcp
       - name: Generate body
         run: |
           echo '**Build At**:
