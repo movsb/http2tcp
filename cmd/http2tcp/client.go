@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"io"
 	"log"
 	"net"
@@ -67,7 +68,7 @@ func (c *Client) proxy(local io.ReadWriteCloser, addr string) error {
 	a.Set(`addr`, addr)
 	u.RawQuery = a.Encode()
 
-	remote, err := http2tcp.Dial(u.String(), c.Token, c.UserAgent)
+	remote, err := http2tcp.Dial(context.Background(), u.String(), c.Token, c.UserAgent)
 	if err != nil {
 		log.Println(err)
 		return err

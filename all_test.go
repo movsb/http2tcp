@@ -1,6 +1,7 @@
 package http2tcp
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -18,7 +19,7 @@ func TestConn(t *testing.T) {
 
 	s.Start()
 
-	conn, err := Dial(s.URL, `123`, ``)
+	conn, err := Dial(context.Background(), s.URL, `123`, ``)
 	if err != nil {
 		t.Fatal(err)
 	}

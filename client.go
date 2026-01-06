@@ -2,14 +2,15 @@ package http2tcp
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"fmt"
 	"io"
 	"net/http"
 )
 
-func Dial(server string, token string, userAgent string) (io.ReadWriteCloser, error) {
-	req, err := http.NewRequest(http.MethodGet, server, nil)
+func Dial(ctx context.Context, server string, token string, userAgent string) (io.ReadWriteCloser, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, server, nil)
 	if err != nil {
 		return nil, err
 	}
